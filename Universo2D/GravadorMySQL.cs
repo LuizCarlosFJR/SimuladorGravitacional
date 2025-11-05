@@ -1,145 +1,156 @@
-﻿using System;
+﻿using MySql.Data.MySqlClient;
+using System;
 using System.Collections.Generic;
-using MySql.Data.MySqlClient;
 using System.Windows.Forms;
-using System.IO;
+using System.Data;
 
 namespace Universo
 {
-    // GravadorMySQL implementa o contrato definido em GravadorUniverso
     public class GravadorMySQL : GravadorUniverso
     {
-        // **!!! CONFIGURAÇÃO OBRIGATÓRIA !!!**
-        // A connectionString está correta, usando 'universo_db'
-        private string connectionString = "Server=localhost;Database=universo_db;Uid=root;Pwd=Byfc550124150;";
+        // Altere esta string com seus dados reais
+        private const string ConnectionString = "server=localhost;port=3306;database=universo_db;uid=root;password=Byfc550124150;";
 
-        // --- IMPLEMENTAÇÃO DOS MÉTODOS ABSTRATOS DE GRAVADORUNIVERSO ---
+        // --- MÉTODOS DE CONEXÃO E TESTE ---
 
-        public override void GravarUniversoInicial(Universo universo, string caminho)
+        public bool TestarConexao()
         {
-            string nome = System.IO.Path.GetFileNameWithoutExtension(caminho);
-            SalvarSimulacao(universo, nome, 0, 0);
-        }
-
-        public override void GravarUniverso(Universo universo, string caminho, int numInterac, int numTempoInterac)
-        {
-            string nome = System.IO.Path.GetFileNameWithoutExtension(caminho);
-            SalvarSimulacao(universo, nome, numInterac, numTempoInterac);
-        }
-
-        public override Universo CarregarUniversoInicial(string caminho)
-        {
-            throw new NotImplementedException("Use a interface de carregamento por ID (CarregarSimulacao(ID)) para MySQL.");
-        }
-
-        public override Universo CarregarSimulacao(string caminho, out int numInterac, out int numTempoInterac)
-        {
-            numInterac = 0;
-            numTempoInterac = 0;
-            MessageBox.Show("Esta função no GravadorMySQL requer o ID da simulação. Tente usar uma interface que liste os IDs ou chame CarregarSimulacao(ID).", "Erro de Chamada", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return null;
-        }
-
-
-        // --- MÉTODOS FOCADOS EM ID DO MYSQL (USADOS PELO FORM1) ---
-
-        // Método Principal de Salvamento
-        public int SalvarSimulacao(Universo u, string nomeSimulacao, int numInterac, int numTempoInterac)
-        {
-            using (var connection = new MySqlConnection(connectionString))
+            using (var connection = new MySqlConnection(ConnectionString))
             {
                 try
                 {
                     connection.Open();
-                    int idSimulacao = 0;
-
-                    // 1. INSERIR NA TABELA SIMULACAO (Cabeçalho)
-                    string sqlSimulacao = "INSERT INTO Simulacao (NomeSimulacao, TotalCorpos, NumInterac, NumTempoInterac) VALUES (@nome, @total, @interac, @tempo); SELECT LAST_INSERT_ID();";
-                    using (var cmd = new MySqlCommand(sqlSimulacao, connection))
-                    {
-                        cmd.Parameters.AddWithValue("@nome", nomeSimulacao);
-                        cmd.Parameters.AddWithValue("@total", u.qtdCorp());
-                        cmd.Parameters.AddWithValue("@interac", numInterac);
-                        cmd.Parameters.AddWithValue("@tempo", numTempoInterac);
-
-                        idSimulacao = Convert.ToInt32(cmd.ExecuteScalar());
-                    }
-
-                    // 2. INSERIR NA TABELA CORPO (Detalhes)
-                    string sqlCorpo = "INSERT INTO Corpo (IdSimulacao, Nome, Massa, Densidade, PosX, PosY, PosZ, VelX, VelY, VelZ) VALUES (@idSim, @nome, @massa, @dens, @pX, @pY, @pZ, @vX, @vY, @vZ)";
-                    using (var cmd = new MySqlCommand(sqlCorpo, connection))
-                    {
-                        cmd.Prepare();
-
-                        foreach (Corpos corpo in u.getCorpo())
-                        {
-                            cmd.Parameters.Clear();
-                            cmd.Parameters.AddWithValue("@idSim", idSimulacao);
-                            cmd.Parameters.AddWithValue("@nome", corpo.getNome());
-                            cmd.Parameters.AddWithValue("@massa", corpo.getMassa());
-                            cmd.Parameters.AddWithValue("@dens", corpo.getDensidade());
-                            cmd.Parameters.AddWithValue("@pX", corpo.getPosX());
-                            cmd.Parameters.AddWithValue("@pY", corpo.getPosY());
-                            cmd.Parameters.AddWithValue("@pZ", corpo.getPosZ());
-                            cmd.Parameters.AddWithValue("@vX", corpo.getVelX());
-                            cmd.Parameters.AddWithValue("@vY", corpo.getVelY());
-                            cmd.Parameters.AddWithValue("@vZ", corpo.getVelZ());
-
-                            cmd.ExecuteNonQuery();
-                        }
-                    }
-                    return idSimulacao;
+                    return true;
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"Erro ao salvar no MySQL: {ex.Message}\nVerifique sua ConnectionString e o Schema do BD.", "Erro de BD", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return 0;
+                    MessageBox.Show($"Falha na conexão com o MySQL. Verifique sua ConnectionString.\n\nDetalhes do Erro:\n{ex.Message}", "Erro de Conexão", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return false;
                 }
             }
         }
 
-        // Método Principal de Carregamento
-        public Universo CarregarSimulacao(int idSimulacao, out int numInterac, out int numTempoInterac)
-        {
-            Universo universoCarregado = new Universo();
-            numInterac = 0;
-            numTempoInterac = 0;
+        // --- MÉTODOS DE SALVAMENTO ---
 
-            using (var connection = new MySqlConnection(connectionString))
+        // Método principal de salvamento (adaptado para o uso no Form1)
+        public int SalvarSimulacao(Universo u, string nomeSimulacao, int numInterac, int tempoInterac)
+        {
+            int idSimulacao = -1;
+
+            using (var connection = new MySqlConnection(ConnectionString))
+            {
+                connection.Open();
+                MySqlTransaction transaction = connection.BeginTransaction();
+
+                try
+                {
+                    // 1. INSERIR NA TABELA SIMULACAO e obter o ID
+                    // ATENÇÃO: Os nomes das colunas aqui (Nome, NumCorpos, NumInteracoes, etc.) 
+                    // devem corresponder exatamente ao seu CREATE TABLE!
+                    string sqlSimulacao = "INSERT INTO Simulacao (NomeSimulacao, TotalCorpos, NumInterac, NumTempoInterac, DataGravacao) VALUES (@nomeSim, @numCorpos, @numInterac, @tempoInterac, NOW()); SELECT LAST_INSERT_ID();";
+                    using (var cmd = new MySqlCommand(sqlSimulacao, connection, transaction))
+                    {
+                        cmd.Parameters.AddWithValue("@nomeSim", nomeSimulacao);
+                        cmd.Parameters.AddWithValue("@numCorpos", u.qtdCorp());
+                        cmd.Parameters.AddWithValue("@numInterac", numInterac);
+                        cmd.Parameters.AddWithValue("@tempoInterac", tempoInterac);
+
+                        idSimulacao = Convert.ToInt32(cmd.ExecuteScalar());
+                    }
+
+                    if (idSimulacao > 0)
+                    {
+                        // 2. INSERIR NA TABELA CORPO (Detalhes)
+                        string sqlCorpo = "INSERT INTO Corpo (IdSimulacao, Nome, Massa, Densidade, PosX, PosY, PosZ, VelX, VelY, VelZ) VALUES (@idSim, @nome, @massa, @dens, @pX, @pY, @pZ, @vX, @vY, @vZ)";
+
+                        using (var cmd = new MySqlCommand(sqlCorpo, connection, transaction))
+                        {
+                            cmd.Parameters.Add("@idSim", MySqlDbType.Int32).Value = idSimulacao;
+                            cmd.Parameters.Add("@nome", MySqlDbType.VarChar);
+                            cmd.Parameters.Add("@massa", MySqlDbType.Double);
+                            cmd.Parameters.Add("@dens", MySqlDbType.Double);
+                            cmd.Parameters.Add("@pX", MySqlDbType.Double);
+                            cmd.Parameters.Add("@pY", MySqlDbType.Double);
+                            cmd.Parameters.Add("@pZ", MySqlDbType.Double);
+                            cmd.Parameters.Add("@vX", MySqlDbType.Double);
+                            cmd.Parameters.Add("@vY", MySqlDbType.Double);
+                            cmd.Parameters.Add("@vZ", MySqlDbType.Double);
+
+                            cmd.Prepare();
+
+                            foreach (Corpos corpo in u.getCorpo())
+                            {
+                                cmd.Parameters["@nome"].Value = corpo.getNome();
+                                cmd.Parameters["@massa"].Value = corpo.getMassa();
+                                cmd.Parameters["@dens"].Value = corpo.getDensidade();
+                                cmd.Parameters["@pX"].Value = corpo.getPosX();
+                                cmd.Parameters["@pY"].Value = corpo.getPosY();
+                                cmd.Parameters["@pZ"].Value = corpo.getPosZ();
+                                cmd.Parameters["@vX"].Value = corpo.getVelX();
+                                cmd.Parameters["@vY"].Value = corpo.getVelY();
+                                cmd.Parameters["@vZ"].Value = corpo.getVelZ();
+
+                                cmd.ExecuteNonQuery();
+                            }
+                        }
+                    }
+
+                    transaction.Commit();
+                    return idSimulacao;
+                }
+                catch (Exception ex)
+                {
+                    transaction.Rollback();
+                    MessageBox.Show($"Erro ao salvar no MySQL: {ex.Message}", "Erro de BD", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return -1;
+                }
+            }
+        }
+
+        // --- MÉTODOS DE CARREGAMENTO ---
+
+        // Carrega a simulação completa a partir do ID
+        public Universo CarregarSimulacao(int idSimulacao, out int numInterac, out int tempoInterac)
+        {
+            numInterac = 0;
+            tempoInterac = 0;
+            Universo u = new Universo();
+
+            using (var connection = new MySqlConnection(ConnectionString))
             {
                 try
                 {
                     connection.Open();
 
-                    // 1. LER O CABEÇALHO DA SIMULAÇÃO
-                    string sqlHeader = "SELECT NumInterac, NumTempoInterac FROM Simulacao WHERE IdSimulacao = @id";
-                    using (var cmdHeader = new MySqlCommand(sqlHeader, connection))
+                    // 1. Carregar dados da Simulação
+                    string sqlSimulacao = "SELECT NumInterac, NumTempoInterac FROM Simulacao WHERE IdSimulacao = @idSim";
+                    using (var cmdSim = new MySqlCommand(sqlSimulacao, connection))
                     {
-                        cmdHeader.Parameters.AddWithValue("@id", idSimulacao);
-                        using (var reader = cmdHeader.ExecuteReader())
+                        cmdSim.Parameters.AddWithValue("@idSim", idSimulacao);
+                        using (var reader = cmdSim.ExecuteReader())
                         {
                             if (reader.Read())
                             {
                                 numInterac = reader.GetInt32("NumInterac");
-                                numTempoInterac = reader.GetInt32("NumTempoInterac");
+                                tempoInterac = reader.GetInt32("NumTempoInterac");
+                            }
+                            else
+                            {
+                                MessageBox.Show($"Simulação com ID {idSimulacao} não encontrada.", "Erro de Carregamento", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                return null;
                             }
                         }
                     }
 
-                    // 2. LER OS CORPOS (Detalhes)
-                    // Garantir que a conexão seja usada para a segunda consulta
-                    connection.Close();
-                    connection.Open();
-
-                    string sqlCorpo = "SELECT Nome, Massa, Densidade, PosX, PosY, PosZ, VelX, VelY, VelZ FROM Corpo WHERE IdSimulacao = @id";
-                    using (var cmdCorpo = new MySqlCommand(sqlCorpo, connection))
+                    // 2. Carregar Corpos
+                    string sqlCorpos = "SELECT * FROM Corpo WHERE IdSimulacao = @idSim";
+                    using (var cmdCorpos = new MySqlCommand(sqlCorpos, connection))
                     {
-                        cmdCorpo.Parameters.AddWithValue("@id", idSimulacao);
-                        using (var reader = cmdCorpo.ExecuteReader())
+                        cmdCorpos.Parameters.AddWithValue("@idSim", idSimulacao);
+                        using (var reader = cmdCorpos.ExecuteReader())
                         {
                             while (reader.Read())
                             {
-                                // Cria um novo objeto Corpo usando o construtor:
                                 Corpos novoCorpo = new Corpos(
                                     reader.GetString("Nome"),
                                     reader.GetDouble("Massa"),
@@ -151,12 +162,11 @@ namespace Universo
                                     reader.GetDouble("VelZ"),
                                     reader.GetDouble("Densidade")
                                 );
-                                universoCarregado.setCorpo(novoCorpo, universoCarregado.qtdCorp());
+                                u.setCorpo(novoCorpo, u.qtdCorp());
                             }
                         }
                     }
-                    MessageBox.Show($"Simulação ID {idSimulacao} carregada com sucesso!");
-                    return universoCarregado;
+                    return u;
                 }
                 catch (Exception ex)
                 {
@@ -166,24 +176,28 @@ namespace Universo
             }
         }
 
-        // --- MÉTODO ADICIONADO PARA TESTE DE CONEXÃO ---
-        public bool TestarConexao()
+        // --- IMPLEMENTAÇÃO OBRIGATÓRIA DOS MEMBROS ABSTRATOS (CS0534) ---
+
+        // Este é o método que o erro CS0534 estava reclamando que não tinha a assinatura correta.
+        // A lógica real é feita em CarregarSimulacao(int, out int, out int).
+        public override Universo CarregarSimulacao(string caminho, out int numInterac, out int tempoInterac)
         {
-            using (var connection = new MySqlConnection(connectionString))
-            {
-                try
-                {
-                    connection.Open();
-                    connection.Close();
-                    return true;
-                }
-                catch (MySqlException ex)
-                {
-                    MessageBox.Show($"Falha na conexão com MySQL:\n{ex.Message}\n\nVerifique a ConnectionString e se o serviço MySQL está ativo.", "Erro de Conexão", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return false;
-                }
-            }
+            numInterac = 0;
+            tempoInterac = 0;
+            MessageBox.Show("Para carregar do MySQL, utilize a opção 'Carregar Simulação' e insira o ID.", "Atenção");
+            return null;
         }
-        // --- FIM DO MÉTODO DE TESTE ---
+
+        public override void GravarUniverso(Universo u, string nomeArquivo, int numInterac, int tempoInterac) { /* Requerido pelo GravadorUniverso */ }
+
+        public override void GravarUniversoInicial(Universo u, string nomeArquivo) { /* Requerido pelo GravadorUniverso */ }
+
+        public override Universo CarregarUniversoInicial(string nomeArquivo)
+        {
+            // Requerido pelo GravadorUniverso
+            MessageBox.Show("Para carregar a configuração inicial do MySQL, utilize a opção de Simulação.", "Atenção");
+            return null;
+        }
+        // --- FIM DOS MÉTODOS ABSTRATOS ---
     }
 }
